@@ -1,0 +1,11 @@
+{
+    "WebServers":  [
+                       "web1"
+                   ],
+    "MonitorPaths":  [
+                         "folder1\\folder2\\folder3\\folder4\\2025",
+                         "folder1\\folder2\\folder3\\folder4",
+                         "xml"
+                     ],
+    "RootPath":  "\\\\server\\share\\root\\"
+}
