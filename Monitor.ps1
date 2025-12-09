@@ -1,6 +1,27 @@
 # Define the path to the config file in the same directory as the script
 $configPath = Join-Path -Path $PSScriptRoot -ChildPath "config.json"
 
+# Path for an error log to capture full exception text (InnerException + stack trace)
+$logPath = Join-Path -Path $PSScriptRoot -ChildPath "error.log"
+
+# Helper: log full exception object with timestamp and context
+function Write-ExceptionLog {
+    param(
+        [Parameter(Mandatory=$true)] $ExceptionObject,
+        [string] $Context = ""
+    )
+    try {
+        $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $body = @()
+        $body += "[$time] Context: $Context"
+        $body += ($ExceptionObject | Out-String)
+        $body += ("-" * 80)
+        $body -join "`r`n" | Out-File -FilePath $logPath -Encoding UTF8 -Append
+    } catch {
+        # best-effort: if logging fails, swallow to avoid crashing monitor
+    }
+}
+
 # Helper: configure TLS protocols and ignore certificate errors (for self-signed certs)
 function Set-IgnoreSslValidation {
     # Accept multiple TLS versions and allow invalid certificates (use with caution)
@@ -200,7 +221,9 @@ $btnHistory_Click = {
                                     $resp.Close()
                                 }
                                 catch {
-                                    # Gather inner exception info for clearer messaging
+                                    # Log full exception (including InnerException and stack)
+                                    Write-ExceptionLog -ExceptionObject $_ -Context "History scan: $fullUrl"
+
                                     $ex = $_.Exception
                                     $msg = $ex.Message
                                     if ($ex.InnerException) { $msg += " - " + $ex.InnerException.Message }
@@ -221,12 +244,20 @@ $btnHistory_Click = {
                                             continue
                                         }
                                         catch {
+                                            # Log the retry exception as well
+                                            Write-ExceptionLog -ExceptionObject $_ -Context "History scan (GET fallback): $fullUrl"
+
                                             $ex2 = $_.Exception
                                             $msg = $ex2.Message
                                             if ($ex2.InnerException) { $msg += " - " + $ex2.InnerException.Message }
                                             if ($msg -match "timed out") { $msg = "Timeout" }
-                                            $grid.Rows[$idx].Cells[1].Value = "SSL ERROR ($msg)"
+
+                                            $grid.Rows[$idx].Cells[1].Value = "SSL ERROR (logged)"
                                             $grid.Rows[$idx].Cells[1].Style.BackColor = [System.Drawing.Color]::LightCoral
+
+                                            # Show full error to the user for diagnosis
+                                            $fullText = ($_ | Out-String)
+                                            [System.Windows.Forms.MessageBox]::Show($fullText, "Request Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
                                             continue
                                         }
                                     }
@@ -234,7 +265,7 @@ $btnHistory_Click = {
                                     if ($msg -match "timed out") { $msg = "Timeout" }
                                     
                                     # --- FIXED: Explicitly target Column Index [1] (Status) ---
-                                    $grid.Rows[$idx].Cells[1].Value = "MISSING ($msg)"
+                                    $grid.Rows[$idx].Cells[1].Value = "MISSING (logged)"
                                     $grid.Rows[$idx].Cells[1].Style.BackColor = [System.Drawing.Color]::LightCoral
                                     # ----------------------------------------------------------
                                 }
@@ -357,6 +388,9 @@ $btnStart_Click = {
                             $serversToCheck.Remove($webServer) | Out-Null
                         }
                         catch {
+                            # Log full exception for diagnosis (includes inner exception and stack trace)
+                            Write-ExceptionLog -ExceptionObject $_ -Context "Watcher: $fullUrl"
+
                             $ex = $_.Exception
                             $msg = $ex.Message
                             if ($ex.InnerException) { $msg += " - " + $ex.InnerException.Message }
@@ -378,11 +412,14 @@ $btnStart_Click = {
                                     continue
                                 }
                                 catch {
+                                    # Log the retry exception as well
+                                    Write-ExceptionLog -ExceptionObject $_ -Context "Watcher (GET fallback): $fullUrl"
+
                                     $ex2 = $_.Exception
                                     $msg = $ex2.Message
                                     if ($ex2.InnerException) { $msg += " - " + $ex2.InnerException.Message }
                                     if ($msg -match "timed out") { $msg = "Timeout" }
-                                    $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Value = "SSL ERROR ($msg)"
+                                    $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Value = "SSL ERROR (logged)"
                                     $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Style.BackColor = [System.Drawing.Color]::LightCoral
                                     continue
                                 }
