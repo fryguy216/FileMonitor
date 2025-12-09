@@ -1,6 +1,21 @@
 # Define the path to the config file in the same directory as the script
 $configPath = Join-Path -Path $PSScriptRoot -ChildPath "config.json"
 
+# Helper: configure TLS protocols and ignore certificate errors (for self-signed certs)
+function Set-IgnoreSslValidation {
+    # Accept multiple TLS versions and allow invalid certificates (use with caution)
+    [System.Net.ServicePointManager]::SecurityProtocol = `
+        [System.Net.SecurityProtocolType]::Tls12 -bor `
+        [System.Net.SecurityProtocolType]::Tls11 -bor `
+        [System.Net.SecurityProtocolType]::Tls
+
+    # Explicit callback with proper parameters to avoid issues
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {
+        param($sender, $cert, $chain, $sslPolicyErrors)
+        return $true
+    }
+}
+
 # --- Logic to SAVE configuration ---
 $saveConfig = {
     $configData = @{
@@ -93,9 +108,8 @@ $btnHistory_Click = {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
-    # Security Protocols
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    # Security Protocols - ensure TLS and ignore cert errors for scanning
+    Set-IgnoreSslValidation
 
     # Form Setup
     $histForm = New-Object System.Windows.Forms.Form
@@ -168,6 +182,9 @@ $btnHistory_Click = {
                                 $fullUrl = "https://$srv/$urlPath"
 
                                 try {
+                                    # Ensure TLS and certificate callback are set
+                                    Set-IgnoreSslValidation
+
                                     $req = [System.Net.WebRequest]::Create($fullUrl)
                                     $req.Method = "HEAD"
                                     $req.Timeout = 2000
@@ -183,7 +200,37 @@ $btnHistory_Click = {
                                     $resp.Close()
                                 }
                                 catch {
-                                    $msg = $_.Exception.Message
+                                    # Gather inner exception info for clearer messaging
+                                    $ex = $_.Exception
+                                    $msg = $ex.Message
+                                    if ($ex.InnerException) { $msg += " - " + $ex.InnerException.Message }
+
+                                    # If it's likely an SSL/authentication issue, retry with GET after ensuring certs are ignored
+                                    if ($msg -match "(certificate|ssl|authentication|secure channel|handshake)") {
+                                        try {
+                                            Set-IgnoreSslValidation
+                                            $req2 = [System.Net.WebRequest]::Create($fullUrl)
+                                            $req2.Method = "GET"
+                                            $req2.Timeout = 2000
+                                            $req2.UseDefaultCredentials = $true
+                                            $resp2 = $req2.GetResponse()
+
+                                            $grid.Rows[$idx].Cells[1].Value = "FOUND ($($resp2.StatusCode))"
+                                            $grid.Rows[$idx].Cells[1].Style.BackColor = [System.Drawing.Color]::LightGreen
+                                            $resp2.Close()
+                                            continue
+                                        }
+                                        catch {
+                                            $ex2 = $_.Exception
+                                            $msg = $ex2.Message
+                                            if ($ex2.InnerException) { $msg += " - " + $ex2.InnerException.Message }
+                                            if ($msg -match "timed out") { $msg = "Timeout" }
+                                            $grid.Rows[$idx].Cells[1].Value = "SSL ERROR ($msg)"
+                                            $grid.Rows[$idx].Cells[1].Style.BackColor = [System.Drawing.Color]::LightCoral
+                                            continue
+                                        }
+                                    }
+
                                     if ($msg -match "timed out") { $msg = "Timeout" }
                                     
                                     # --- FIXED: Explicitly target Column Index [1] (Status) ---
@@ -211,8 +258,7 @@ $btnStart_Click = {
     & $saveConfig
     
     # --- NEW: Ignore SSL Errors (for Self-Signed Certs) ---
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    Set-IgnoreSslValidation
     # ------------------------------------------------------
 
     # --- 1. UI State Management [2] ---
@@ -291,10 +337,16 @@ $btnStart_Click = {
                         $urlPath = "$subPath/$fileName".Replace('\', '/')
                         $fullUrl = "https://$webServer/$urlPath"
 
+                        # Ensure TLS and cert callback are set before each request attempt
+                        Set-IgnoreSslValidation
+
                         # Check URL
                         try {
                             $req = [System.Net.WebRequest]::Create($fullUrl)
                             $req.Method = "HEAD"
+                            $req.Timeout = 2000
+                            $req.UseDefaultCredentials = $true
+                            
                             $resp = $req.GetResponse()
                             
                             # IF FOUND: Update Grid and Remove from "To Check" list
@@ -305,6 +357,37 @@ $btnStart_Click = {
                             $serversToCheck.Remove($webServer) | Out-Null
                         }
                         catch {
+                            $ex = $_.Exception
+                            $msg = $ex.Message
+                            if ($ex.InnerException) { $msg += " - " + $ex.InnerException.Message }
+
+                            # If likely SSL/certificate/auth issue, try a GET fallback after ensuring certs are ignored
+                            if ($msg -match "(certificate|ssl|authentication|secure channel|handshake)") {
+                                try {
+                                    Set-IgnoreSslValidation
+                                    $req2 = [System.Net.WebRequest]::Create($fullUrl)
+                                    $req2.Method = "GET"
+                                    $req2.Timeout = 2000
+                                    $req2.UseDefaultCredentials = $true
+                                    $resp2 = $req2.GetResponse()
+
+                                    $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Value = "FOUND ($($resp2.StatusCode))"
+                                    $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Style.BackColor = [System.Drawing.Color]::LightGreen
+                                    $resp2.Close()
+                                    $serversToCheck.Remove($webServer) | Out-Null
+                                    continue
+                                }
+                                catch {
+                                    $ex2 = $_.Exception
+                                    $msg = $ex2.Message
+                                    if ($ex2.InnerException) { $msg += " - " + $ex2.InnerException.Message }
+                                    if ($msg -match "timed out") { $msg = "Timeout" }
+                                    $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Value = "SSL ERROR ($msg)"
+                                    $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Style.BackColor = [System.Drawing.Color]::LightCoral
+                                    continue
+                                }
+                            }
+
                             # IF MISSING: Update status, keep in list
                             $DataGridView1.Rows[$rowIndex].Cells[$colIndex].Value = "SEARCHING..."
                         }
